@@ -31,7 +31,7 @@ serve(async (req) => {
       generateAudio = true 
     }: KlingVideoGenRequest = await req.json();
     
-    const KLING_API_KEY = Deno.env.get("KLING_API_KEY") || "38d58ef89eb32134ac2d361298528c6d";
+    const KLING_API_KEY = Deno.env.get("KLING_API_KEY");
 
     if (!KLING_API_KEY) {
       throw new Error("KLING_API_KEY not configured");
@@ -42,24 +42,27 @@ serve(async (req) => {
     }
 
     console.log(`Kling Video Gen: mode=${mode}, duration=${duration}s, aspect=${aspectRatio}, audio=${generateAudio}`);
+    console.log(`Using Kling API Key: ${KLING_API_KEY.substring(0, 8)}...`);
 
     // Prepare the request body for Kling AI API
     const klingRequestBody: any = {
-      model: "kling-v1",
+      model_name: "kling-v1",
       prompt: prompt,
       negative_prompt: negativePrompt || "blurry, low quality, distorted, watermark, text, logo, artifacts",
-      cfg_scale: 0.5, // Kling uses cfg_scale between 0-1
-      mode: mode === "text-to-video" ? "std" : "pro", // std for text-to-video, pro for image-to-video
+      cfg_scale: 0.5,
+      mode: mode === "text-to-video" ? "std" : "pro",
       duration: duration.toString(),
-      aspect_ratio: aspectRatio,
+      aspect_ratio: aspectRatio.replace(":", "_"), // Kling uses 16_9 format
     };
 
     // Add image data for image-to-video mode
     if (mode === "image-to-video" && imageBase64) {
       console.log("Processing image-to-video with uploaded image");
       klingRequestBody.image = imageBase64;
-      klingRequestBody.image_tail = imageBase64; // Kling uses this for end frame
+      klingRequestBody.image_tail = imageBase64;
     }
+
+    console.log("Sending request to Kling AI...");
 
     // Create task with Kling AI API
     const createResponse = await fetch(
@@ -74,23 +77,27 @@ serve(async (req) => {
       }
     );
 
+    const responseText = await createResponse.text();
+    console.log(`Kling API Response Status: ${createResponse.status}`);
+    console.log(`Kling API Response: ${responseText}`);
+
     if (!createResponse.ok) {
-      const errorText = await createResponse.text();
-      console.error("Kling AI error:", errorText);
-      if (errorText.includes("429") || errorText.includes("rate limit") || errorText.includes("quota")) {
+      console.error("Kling AI error:", responseText);
+      if (responseText.includes("429") || responseText.includes("rate limit") || responseText.includes("quota")) {
         throw new Error("Rate limit exceeded. Please wait a moment and try again.");
       }
-      throw new Error(`Kling AI Error: ${errorText}`);
+      throw new Error(`Kling AI Error (${createResponse.status}): ${responseText}`);
     }
 
-    const createResult = await createResponse.json();
+    const createResult = JSON.parse(responseText);
     const taskId = createResult.data?.task_id;
 
     if (!taskId) {
-      throw new Error("Failed to create Kling video generation task");
+      console.error("No task ID in response:", createResult);
+      throw new Error("Failed to create Kling video generation task - No task ID returned");
     }
 
-    console.log(`Kling task created: ${taskId}`);
+    console.log(`Kling task created successfully: ${taskId}`);
 
     // Generate production details using AI analysis
     const generationPlan = generateProductionPlan(prompt, negativePrompt, mode, duration, aspectRatio);
@@ -119,7 +126,7 @@ serve(async (req) => {
         message: mode === "image-to-video" 
           ? "Video generation started. Animation will be created from your image."
           : "Video generation started. Your AI video is being created.",
-        estimatedGenerationTime: duration * 30, // Kling takes about 30 seconds per second of video
+        estimatedGenerationTime: duration * 30,
       }),
       {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
